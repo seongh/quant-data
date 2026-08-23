@@ -1,0 +1,49 @@
+name: daily-trade-kr
+
+on:
+  schedule:
+    # KRX 개장(09:00 KST) 직후 — UTC 00:10, 평일
+    - cron: "10 0 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-trade-kr
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: KR 목표비중 산출 (K조합+VT)
+        run: python pipeline/signals_kr.py
+
+      - name: KIS 모의계좌 집행
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT: ${{ secrets.KIS_ACCOUNT }}
+        run: python pipeline/execute_kr.py
+
+      - name: 로그 커밋
+        if: always()
+        run: |
+          git config user.name "quant-kr-bot"
+          git config user.email "actions@github.com"
+          git pull --rebase || true
+          git add signals reports
+          git diff --cached --quiet && echo "변경 없음" && exit 0
+          git commit -m "kr-trade: $(date -u +%F) 집행 로그"
+          git push
