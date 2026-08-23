@@ -19,8 +19,17 @@ PIT_FILE = UNIVERSE_DIR / "sp500_pit_constituents.csv"
 WIKI_NDX = "https://en.wikipedia.org/wiki/Nasdaq-100"
 HEADERS = {"User-Agent": "Mozilla/5.0 (quant-pipeline; personal research)"}
 
-# 전략·벤치마크용 ETF (듀얼모멘텀 자산군 + 벤치마크 + 레짐 필터)
-ETFS = ["SPY", "QQQ", "EFA", "EEM", "TLT", "IEF", "GLD", "BIL"]
+# 전략·벤치마크용 ETF (자산배분·섹터로테이션·벤치마크·레짐 필터)
+ETFS = [
+    # 광역 자산군
+    "SPY", "QQQ", "IWM", "EFA", "EEM",          # 주식 (미국 대/소형, 선진, 신흥)
+    "TLT", "IEF", "SHY", "TIP", "LQD", "HYG",   # 채권 (장기/중기/단기/물가/회사채/하이일드)
+    "GLD", "DBC",                                # 금, 원자재
+    "VNQ",                                       # 리츠
+    "BIL",                                       # 현금성
+    # 섹터 (SPDR)
+    "XLB", "XLE", "XLF", "XLI", "XLK", "XLP", "XLU", "XLV", "XLY",
+]
 
 
 PIT_SOURCE_URL = (
