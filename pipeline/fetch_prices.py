@@ -86,16 +86,30 @@ def merge_and_save(new: pd.DataFrame) -> None:
         print(f"{path.name}: {len(g):,} rows")
 
 
+def stored_tickers() -> set[str]:
+    """이미 데이터가 있는 티커 집합 (신규 편입 티커 감지용)."""
+    files = sorted(PRICES_DIR.glob("*.parquet"))
+    if not files:
+        return set()
+    return set(pd.read_parquet(files[-1], columns=["ticker"])["ticker"].unique())
+
+
 def main() -> None:
     tickers = load_universe()
     last = last_stored_date()
     if last is None:
         start = f"{START_YEAR}-01-01"
         print(f"백필 모드: {start}부터 {len(tickers)}개 티커")
-    else:
-        start = (last - pd.Timedelta(days=5)).strftime("%Y-%m-%d")  # 겹침 구간은 dedup
-        print(f"증분 모드: {start}부터 (마지막 저장일 {last.date()})")
-    merge_and_save(download(tickers, start))
+        merge_and_save(download(tickers, start))
+        return
+    # 유니버스에 새로 들어온 티커(ETF 추가, 지수 편입 등)는 전체 히스토리 백필
+    new_tickers = sorted(set(tickers) - stored_tickers())
+    if new_tickers:
+        print(f"신규 티커 {len(new_tickers)}개 전체 백필: {new_tickers[:10]}")
+        merge_and_save(download(new_tickers, f"{START_YEAR}-01-01"))
+    start = (last - pd.Timedelta(days=5)).strftime("%Y-%m-%d")  # 겹침 구간은 dedup
+    print(f"증분 모드: {start}부터 (마지막 저장일 {last.date()})")
+    merge_and_save(download([t for t in tickers if t not in new_tickers], start))
 
 
 if __name__ == "__main__":
