@@ -1,25 +1,23 @@
-"""한국(KRX) 일봉 수집 — pykrx 기반.
+"""한국(KRX) 일봉 수집 — FinanceDataReader(네이버 금융 기반, 로그인 불필요).
 
-- 유니버스: KOSPI200 현재 구성종목 + 자산배분용 국내 ETF
-  (KOSPI200 시점별 히스토리는 미확보 → 생존편향 잔존, 문서화된 한계.
-   미국과 동일하게 수정주가(adjusted) 사용)
+- 배경: KRX 정보데이터시스템이 로그인 필수로 변경되어 pykrx 사용 불가 → fdr로 교체 (2026-08-23)
+- 유니버스: KOSPI 시가총액 상위 200 (KOSPI200 근사) + 자산배분용 국내 ETF
+  (시점별 구성 히스토리 미확보 → 생존편향 잔존, 문서화된 한계. 수정주가 사용)
 - 저장: data/krx/{YEAR}.parquet  (date, ticker, name, open, high, low, close, volume)
-- 최초 실행: START부터 전체 백필 (~20분), 이후 증분
 """
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
+import FinanceDataReader as fdr
 import pandas as pd
-from pykrx import stock
 
 ROOT = Path(__file__).resolve().parent.parent
 KRX_DIR = ROOT / "data" / "krx"
 
-START = "20050101"
-KOSPI200_INDEX = "1028"
-# 자산배분용 ETF (상장일이 짧은 것은 있는 구간만 수집)
+START = "2005-01-01"
+TOP_N = 200
 ETFS = {
     "069500": "KODEX200",
     "229200": "KODEX코스닥150",
@@ -31,13 +29,26 @@ ETFS = {
 
 
 def get_universe() -> dict[str, str]:
-    tickers = stock.get_index_portfolio_deposit_file(KOSPI200_INDEX)
-    uni = {}
-    for t in tickers:
+    """KOSPI 시총 상위 TOP_N + ETF. 리스팅 소스는 순차 폴백."""
+    listing = None
+    for market in ("KOSPI", "KRX"):
         try:
-            uni[t] = stock.get_market_ticker_name(t)
-        except Exception:
-            uni[t] = t
+            df = fdr.StockListing(market)
+            if df is not None and len(df) > 100:
+                listing = df
+                break
+        except Exception as e:
+            print(f"[warn] StockListing({market}) 실패: {str(e)[:80]}", file=sys.stderr)
+    if listing is None:
+        raise RuntimeError("종목 리스팅 소스 전부 실패")
+    cols = {c.lower(): c for c in listing.columns}
+    code_col = cols.get("code") or cols.get("symbol")
+    name_col = cols.get("name")
+    cap_col = cols.get("marcap")
+    if cap_col:
+        listing = listing.sort_values(cap_col, ascending=False)
+    top = listing.head(TOP_N)
+    uni = {str(r[code_col]).zfill(6): str(r[name_col]) for _, r in top.iterrows()}
     uni.update(ETFS)
     return uni
 
@@ -57,29 +68,23 @@ def stored_tickers() -> set:
     return set(pd.read_parquet(files[-1], columns=["ticker"])["ticker"].unique())
 
 
-def fetch_one(ticker: str, name: str, start: str, end: str) -> pd.DataFrame | None:
-    for fn in (stock.get_market_ohlcv, getattr(stock, "get_etf_ohlcv_by_date", None)):
-        if fn is None:
-            continue
+def fetch_one(ticker: str, name: str, start: str) -> pd.DataFrame | None:
+    for attempt in range(2):
         try:
-            if fn is stock.get_market_ohlcv:
-                raw = fn(start, end, ticker, adjusted=True)
-            else:
-                raw = fn(start, end, ticker)
+            raw = fdr.DataReader(ticker, start)
             if raw is None or raw.empty:
-                continue
-            raw = raw.reset_index()
-            ren = {"날짜": "date", "시가": "open", "고가": "high", "저가": "low",
-                   "종가": "close", "거래량": "volume"}
-            raw = raw.rename(columns=ren)
-            keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in raw.columns]
-            df = raw[keep].copy()
+                return None
+            df = raw.reset_index().rename(columns={
+                "Date": "date", "Open": "open", "High": "high",
+                "Low": "low", "Close": "close", "Volume": "volume"})
+            keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in df.columns]
+            df = df[keep].copy()
             df["ticker"] = ticker
             df["name"] = name
-            df = df[df["close"] > 0]
-            return df
+            return df[df["close"] > 0]
         except Exception as e:
-            print(f"[warn] {ticker} {name}: {type(e).__name__} {str(e)[:80]}", file=sys.stderr)
+            print(f"[warn] {ticker} {name} 시도{attempt+1}: {str(e)[:80]}", file=sys.stderr)
+            time.sleep(3)
     return None
 
 
@@ -101,24 +106,24 @@ def merge_and_save(new: pd.DataFrame) -> None:
 
 def main() -> None:
     uni = get_universe()
-    print(f"KRX 유니버스: {len(uni)}개 (KOSPI200 + ETF {len(ETFS)})")
+    print(f"KRX 유니버스: {len(uni)}개 (KOSPI 시총상위 {TOP_N} + ETF {len(ETFS)})")
     last = last_stored_date()
-    end = date.today().strftime("%Y%m%d")
     known = stored_tickers()
-    frames = []
+    frames, fail = [], 0
     for i, (t, name) in enumerate(uni.items()):
-        # 신규 티커는 전체 백필, 기존 티커는 증분
-        if last is None or t not in known:
-            start = START
-        else:
-            start = (last - pd.Timedelta(days=5)).strftime("%Y%m%d")
-        df = fetch_one(t, name, start, end)
+        start = START if (last is None or t not in known) else (
+            (last - pd.Timedelta(days=5)).strftime("%Y-%m-%d"))
+        df = fetch_one(t, name, start)
         if df is not None:
             frames.append(df)
+        else:
+            fail += 1
         if i % 20 == 19:
-            print(f"  {i+1}/{len(uni)}")
-        time.sleep(0.4)  # KRX 서버 예의
+            print(f"  {i+1}/{len(uni)} (실패 {fail})")
+        time.sleep(0.3)
     merge_and_save(pd.concat(frames, ignore_index=True) if frames else pd.DataFrame())
+    if fail > len(uni) * 0.2:
+        sys.exit(f"실패 비율 과다: {fail}/{len(uni)}")
 
 
 if __name__ == "__main__":
