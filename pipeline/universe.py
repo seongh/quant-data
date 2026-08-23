@@ -19,6 +19,9 @@ PIT_FILE = UNIVERSE_DIR / "sp500_pit_constituents.csv"
 WIKI_NDX = "https://en.wikipedia.org/wiki/Nasdaq-100"
 HEADERS = {"User-Agent": "Mozilla/5.0 (quant-pipeline; personal research)"}
 
+# 전략·벤치마크용 ETF (듀얼모멘텀 자산군 + 벤치마크 + 레짐 필터)
+ETFS = ["SPY", "QQQ", "EFA", "EEM", "TLT", "IEF", "GLD", "BIL"]
+
 
 PIT_SOURCE_URL = (
     "https://raw.githubusercontent.com/fja05680/sp500/master/"
@@ -82,7 +85,7 @@ def build_current_universe() -> pd.DataFrame:
         ndx = []
     rows = []
     seen = set()
-    for t, src in [(t, "SP500") for t in sp500] + [(t, "NDX100") for t in ndx]:
+    for t, src in [(t, "SP500") for t in sp500] + [(t, "NDX100") for t in ndx] + [(t, "ETF") for t in ETFS]:
         yt = normalize_ticker(t)
         if yt in seen:
             # 중복(양쪽 소속)은 소스 병합
