@@ -1,3 +1,27 @@
+# 집행 로그 2026-08-25
+- 소스: F1 시스템 신호 (2026-08-24)
+- 계좌: $99,921 (현금 $0, 고점대비 -0.1%)
+- SELL AAPL $1,000
+- FAIL sell AFL: HTTP Error 403: Forbidden
+- SELL ALL $1,000
+- SELL AMZN $999
+- FAIL sell AWK: HTTP Error 403: Forbidden
+- SELL BAC $1,004
+- FAIL sell BAX: HTTP Error 403: Forbidden
+- SELL BKNG $1,005
+- FAIL sell CVS: HTTP Error 403: Forbidden
+- BUY ADM $999
+- BUY AES $999
+- BUY AMAT $999
+- BUY APA $999
+- BUY COHR $999
+- BUY COP $999
+- BUY CVX $999
+- BUY DD $999
+- BUY DLR $999
+
+---
+
 # 집행 로그 2026-08-24
 - 소스: F1 시스템 신호 (2026-08-21)
 - 계좌: $99,852 (현금 $0, 고점대비 -0.1%)
