@@ -1,0 +1,58 @@
+name: daily-trade
+
+on:
+  schedule:
+    # 미국 장 개장(09:30 ET) 직후 — UTC 13:40 (서머타임 기준), 평일
+    - cron: "40 13 * * 1-5"
+  workflow_dispatch: {}   # 수동 실행 (테스트용)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-trade
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: F1 시스템 목표비중 산출
+        run: python pipeline/signals.py
+
+      - name: 사전 비행검사 (계층 1 — 실패 시 집행 차단)
+        run: python pipeline/preflight.py us
+
+      - name: 모의계좌 집행 (위원회 결정 우선, 없으면 시스템 신호)
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          DECISION_URL: ${{ vars.DECISION_URL }}
+        run: python pipeline/execute.py
+
+      - name: 사후 대사 (계층 3 — 조용한 실패 봉쇄)
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python pipeline/reconcile.py us
+
+      - name: 로그 커밋
+        if: always()
+        run: |
+          git config user.name "quant-trade-bot"
+          git config user.email "actions@github.com"
+          git pull --rebase --autostash || true
+          git add signals reports
+          git diff --cached --quiet && echo "변경 없음" && exit 0
+          git commit -m "trade: $(date -u +%F) 집행 로그"
+          git push
