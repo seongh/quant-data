@@ -1,3 +1,25 @@
+# 집행 로그 2026-08-26
+- 소스: F1 시스템 신호 (2026-08-25)
+- 계좌: $100,131 (현금 $-3,984, 고점대비 0.0%)
+- SELL ADM $1,047
+- FAIL sell AFL: HTTP Error 403: Forbidden
+- FAIL sell AWK: HTTP Error 403: Forbidden
+- FAIL sell BAX: HTTP Error 403: Forbidden
+- FAIL sell COHR: HTTP Error 403: Forbidden
+- FAIL sell COP: HTTP Error 403: Forbidden
+- FAIL sell CVS: HTTP Error 403: Forbidden
+- FAIL sell CVX: HTTP Error 403: Forbidden
+- FAIL sell DD: HTTP Error 403: Forbidden
+- FAIL sell DLR: HTTP Error 403: Forbidden
+- BUY AMCR $1,001
+- BUY AVY $1,001
+- BUY BDX $1,001
+- BUY CBRE $1,001
+- BUY CF $1,001
+- BUY CPAY $1,001
+
+---
+
 # 집행 로그 2026-08-25
 - 소스: F1 시스템 신호 (2026-08-24)
 - 계좌: $99,921 (현금 $0, 고점대비 -0.1%)
