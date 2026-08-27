@@ -1,3 +1,33 @@
+# 집행 로그 2026-08-27
+- 소스: F1 시스템 신호 (2026-08-26)
+- 계좌: $100,076 (현금 $-8,945, 고점대비 -0.1%)
+- SELL AFL 전량 ≈$991
+- SELL APA 전량 ≈$980
+- SELL AVY 전량 ≈$994
+- SELL AWK 전량 ≈$1,011
+- SELL BAX 전량 ≈$994
+- SELL BDX 전량 ≈$994
+- SELL BKR 전량 ≈$980
+- SELL CBRE 전량 ≈$989
+- SELL CF 전량 ≈$955
+- SELL COHR 전량 ≈$1,034
+- SELL COP 전량 ≈$970
+- SELL CPAY 전량 ≈$997
+- SELL CVS 전량 ≈$993
+- SELL CVX 전량 ≈$982
+- SELL DD 전량 ≈$1,009
+- SELL DLR 전량 ≈$1,003
+- SELL EEM $246
+- BUY ABT $1,001
+- BUY ADBE $1,001
+- BUY ADP $1,001
+- BUY AJG $1,001
+- BUY ALLE $1,001
+- BUY AMGN $1,001
+- BUY AMZN $1,001
+
+---
+
 # 집행 로그 2026-08-26
 - 소스: F1 시스템 신호 (2026-08-25)
 - 계좌: $100,131 (현금 $-3,984, 고점대비 0.0%)
