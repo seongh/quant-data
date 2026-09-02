@@ -1,3 +1,22 @@
+# 집행 로그 2026-09-02
+- 소스: 위원회 결정 오버레이 (2026-09-02 정례위원회 승인안) (2026-09-02)
+- 계좌: $99,523 (현금 $112, 고점대비 -0.8%)
+- HOLD(MR 동결 mr_policy=hold) A ≈$1,003 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ADSK ≈$974 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AFL ≈$1,006 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ALLE ≈$979 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMAT ≈$984 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AME ≈$984 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMGN ≈$1,020 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ARE ≈$1,027 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AVY ≈$999 보유 유지
+- HOLD(MR 동결 mr_policy=hold) BEN ≈$998 보유 유지
+- SELL SPY $4,974
+- 매수 예산: 재조회 현금 $112 × 95% = $106
+- SKIP(현금부족) BIL buy
+
+---
+
 # 집행 로그 2026-09-01
 - 소스: F1 시스템 신호 (2026-08-31)
 - 계좌: $99,194 (현금 $-2, 고점대비 -1.1%)
