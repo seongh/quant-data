@@ -1,9 +1,18 @@
 name: daily-data
 
+# [패치 15 — 2026-09-05] 스케줄 지연 자가복구:
+# - 단일 cron 의존 제거: GitHub Actions cron은 지연·누락이 잦음(보장 없음) → 예비 cron 2개 추가
+# - 신선도 멱등 가드: 이미 완전한 데이터면 즉시 종료 → 예비 cron·push 트리거가 중복 수집하지 않음
+# - 장중 오염 방지는 pipeline/fetch_prices.py 의 drop_incomplete_latest 가드가 담당
+
 on:
   schedule:
-    # 미국 장 마감(16:00 ET) 이후 — UTC 22:30, 화~토(UTC) = 미국 월~금 마감 후
+    # 본 수집: 미국 장 마감(16:00 ET) 이후 — UTC 22:30 (미국 월~금 마감 당일)
     - cron: "30 22 * * 1-5"
+    # 예비 1: 본 수집 미발화/실패 시 — UTC 23:45 (같은 날)
+    - cron: "45 23 * * 1-5"
+    # 예비 2: 최종 보충 — UTC 02:00 익일 (화~토 UTC = 미국 월~금 마감 익일 새벽)
+    - cron: "0 2 * * 2-6"
   workflow_dispatch: {}   # 수동 실행 버튼
   push:
     branches: [main]
@@ -30,13 +39,46 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: 신선도 멱등 가드 (완전한 데이터 보유 시 이후 단계 스킵)
+        id: guard
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import sys
+          from pathlib import Path
+          import pandas as pd
+
+          MIN_SPY_VOLUME = 20_000_000
+          fresh = False
+          files = sorted(Path("data/prices").glob("*.parquet"))
+          if files:
+              df = pd.read_parquet(files[-1], columns=["date", "ticker", "volume"])
+              df["date"] = pd.to_datetime(df["date"])
+              last = df["date"].max()
+              now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+              # 기대 최신일: 오늘 세션 종료(21:00 UTC) 후면 오늘, 아니면 직전 평일
+              ref = now.normalize() if now.hour >= 21 else now.normalize() - pd.Timedelta(days=1)
+              while ref.weekday() >= 5:
+                  ref -= pd.Timedelta(days=1)
+              spy = df[(df["date"] == last) & (df["ticker"] == "SPY")]
+              vol_ok = (not spy.empty) and float(spy["volume"].iloc[0]) >= MIN_SPY_VOLUME
+              fresh = bool(last >= ref and vol_ok)
+              print(f"last={last.date()} ref={ref.date()} vol_ok={vol_ok}", file=sys.stderr)
+          print(f"fresh={'true' if fresh else 'false'}")
+          EOF
+          echo "가드 판정: $(grep fresh= $GITHUB_OUTPUT | tail -1 || true)"
+        # 휴장일(예: 노동절)에는 fresh=false 로 재실행되지만, 신규 데이터가 없어
+        # fetch 가드가 아무것도 저장하지 않고 '변경 없음'으로 종료됨 (무해)
+
       - name: 유니버스 갱신
+        if: steps.guard.outputs.fresh != 'true'
         run: python pipeline/universe.py
 
-      - name: 가격 수집 (백필/증분 자동 판별)
+      - name: 가격 수집 (백필/증분 자동 판별 + 완전성 가드)
+        if: steps.guard.outputs.fresh != 'true'
         run: python pipeline/fetch_prices.py
 
       - name: 재무 스냅샷 (매월 1~4일에만)
+        if: steps.guard.outputs.fresh != 'true'
         run: |
           DAY=$(date -u +%d)
           if [ "$DAY" -le 4 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -45,16 +87,18 @@ jobs:
             echo "이번 달 스냅샷 기간 아님 — 건너뜀"
           fi
 
-      - name: 데이터 품질 검증
+      - name: 데이터 품질 검증 (완전성 포함 — 실패 시 워크플로 FAIL → 예비 cron 재시도)
+        if: steps.guard.outputs.fresh != 'true'
         run: python pipeline/validate.py
 
       - name: 신호 사전점검 (조기 경보 — 집행 15시간 전 이상 감지)
+        if: steps.guard.outputs.fresh != 'true'
         run: |
           python pipeline/signals.py
           python pipeline/preflight.py us
 
       - name: 커밋 & 푸시
-        if: always()
+        if: always() && steps.guard.outputs.fresh != 'true'
         run: |
           git config user.name "quant-pipeline-bot"
           git config user.email "actions@github.com"
