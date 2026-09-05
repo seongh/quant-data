@@ -5,6 +5,8 @@
 2. 커버리지: 유니버스 대비 데이터가 있는 티커 비율
 3. 무결성: 음수/0 가격, high<low 같은 불량 행
 4. 이상 수익률: 하루 ±50% 초과 (분할 미반영 의심 사례) 카운트
+5. [패치 15] 완전성: 최신일 SPY 거래량 ≥ 20M주 (장중 스냅샷·부분 데이터 감지 —
+   9/3 사고: 09:55 ET 스냅샷(5.8M주)이 종가로 저장됐는데 기존 검증이 PASS 판정)
 검증 실패 시 exit code 1 → Actions 실행이 실패로 표시되어 바로 인지 가능.
 """
 import sys
@@ -44,6 +46,16 @@ def main() -> None:
     if len(bad) > 0:
         problems.append(f"무결성 실패: 불량 행 {len(bad)}건")
 
+    # 패치 15: 완전성 — 최신일 SPY 거래량으로 장중/부분 데이터 감지
+    MIN_SPY_VOLUME = 20_000_000
+    spy = latest[latest["ticker"] == "SPY"]
+    spy_vol = float(spy["volume"].iloc[0]) if not spy.empty else 0.0
+    if spy_vol < MIN_SPY_VOLUME:
+        problems.append(
+            f"완전성 실패: 최신일({last_date.date()}) SPY 거래량 {spy_vol:,.0f} < "
+            f"{MIN_SPY_VOLUME:,} — 장중 스냅샷/부분 데이터 의심"
+        )
+
     df = df.sort_values(["ticker", "date"])
     rets = df.groupby("ticker")["close"].pct_change()
     extreme = int((rets.abs() > 0.5).sum())
@@ -55,6 +67,7 @@ def main() -> None:
         f"- 마지막 데이터 날짜: {last_date.date()} (staleness {staleness}일)",
         f"- 최신일 커버리지: {coverage:.1%} / 유니버스 {len(universe)} 티커",
         f"- 불량 행(음수가·high<low): {len(bad)}건",
+        f"- 최신일 SPY 거래량: {spy_vol:,.0f} (하한 {MIN_SPY_VOLUME:,})",
         f"- 이상 수익률(일 ±50% 초과): {extreme}건 (급등락·분할 확인 필요 시 수동 점검)",
         f"- 판정: {'FAIL — ' + '; '.join(problems) if problems else 'PASS'}",
     ]
