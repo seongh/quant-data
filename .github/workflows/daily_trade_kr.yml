@@ -1,0 +1,77 @@
+name: daily-trade-kr
+
+on:
+  schedule:
+    # 백업 시계: 주 시계는 외부(cron-job.org, 17번 문서) workflow_dispatch. GitHub cron은 3슬롯 백업(비정각).
+    # KRX 개장 후 09:12 / 09:42 / 10:12 KST, 평일. 멱등 가드로 1회만 집행 (패치 13 B)
+    - cron: "12 0 * * 1-5"
+    - cron: "42 0 * * 1-5"
+    - cron: "12 1 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-trade-kr
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 멱등 가드 (오늘 이미 실제 집행했으면 이후 단계 전부 스킵 — 이중 집행 차단)
+        id: idem
+        run: |
+          TODAY=$(TZ=Asia/Seoul date +%F)
+          LAST=$(cat signals/last_executed_kr.txt 2>/dev/null || echo none)
+          if [ "$LAST" = "$TODAY" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "오늘($TODAY) 실집행 마커 존재 — 중복 집행 방지 스킵 (외부 시계·백업 cron·워치독 중복 발화)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "마지막 실집행 $LAST ≠ 오늘 $TODAY — 집행 진행"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.idem.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+        if: steps.idem.outputs.skip != 'true'
+
+      - name: KR 목표비중 산출 (K조합+VT)
+        if: steps.idem.outputs.skip != 'true'
+        run: python pipeline/signals_kr.py
+
+      - name: 사전 비행검사 (계층 1 — 실패 시 집행 차단)
+        if: steps.idem.outputs.skip != 'true'
+        run: python pipeline/preflight.py kr
+
+      - name: KIS 모의계좌 집행
+        if: steps.idem.outputs.skip != 'true'
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT: ${{ secrets.KIS_ACCOUNT }}
+        run: python pipeline/execute_kr.py
+
+      - name: 사후 대사 (계층 3 — 조용한 실패 봉쇄)
+        if: steps.idem.outputs.skip != 'true'
+        run: python pipeline/reconcile.py kr
+
+      - name: 로그 커밋
+        if: always() && steps.idem.outputs.skip != 'true'
+        run: |
+          git config user.name "quant-kr-bot"
+          git config user.email "actions@github.com"
+          git pull --rebase || true
+          git add signals reports
+          git diff --cached --quiet && echo "변경 없음" && exit 0
+          git commit -m "kr-trade: $(date -u +%F) 집행 로그"
+          git push
