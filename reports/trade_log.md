@@ -1,3 +1,22 @@
+# 집행 로그 2026-09-11
+- 소스: 위원회 결정 오버레이 (2026-09-02 정례위원회 승인안) (2026-09-10)
+- 계좌: $99,609 (현금 $3,373, 고점대비 -0.7%)
+- HOLD(MR 동결 mr_policy=hold) A ≈$968 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ADSK ≈$852 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AFL ≈$989 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ALLE ≈$959 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMAT ≈$1,038 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AME ≈$1,023 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMGN ≈$885 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ARE ≈$981 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AVY ≈$973 보유 유지
+- HOLD(MR 동결 mr_policy=hold) BEN ≈$1,011 보유 유지
+- 매수 예산: 재조회 현금 $3,373 × 95% = $3,205
+- BUY SPY $3,205
+- SKIP(현금부족) IWM buy
+
+---
+
 # 집행 로그 2026-09-10
 - 소스: 위원회 결정 오버레이 (2026-09-02 정례위원회 승인안) (2026-09-09)
 - 계좌: $99,338 (현금 $1,001, 고점대비 -1.0%)
