@@ -1,3 +1,33 @@
+# 집행 로그 2026-09-14
+- 소스: F1 원신호 (결정 만료: 2026-09-12) (2026-09-11)
+- 계좌: $99,210 (현금 $169, 고점대비 -1.1%)
+- SELL HYG 전량 ≈$9,878
+- SELL BIL $7,812
+- SELL EFA 전량 ≈$4,986
+- SELL ARE 전량 ≈$1,017
+- SELL AFL 전량 ≈$1,005
+- SELL AME 전량 ≈$993
+- SELL AVY 전량 ≈$981
+- SELL ALLE 전량 ≈$974
+- SELL A 전량 ≈$967
+- SELL AMAT 전량 ≈$965
+- SELL ADSK 전량 ≈$917
+- SELL DBC $420
+- 매수 예산: 재조회 현금 $27,411 × 95% = $26,041
+- BUY SPY $13,871
+- BUY EEM $8,071
+- BUY IWM $1,002
+- BUY AES $992
+- BUY AJG $992
+- BUY AMCR $992
+- SKIP(현금부족) APD buy
+- SKIP(현금부족) AWK buy
+- SKIP(현금부족) BAX buy
+- SKIP(현금부족) BKR buy
+- SKIP(현금부족) BMY buy
+
+---
+
 # 집행 로그 2026-09-12
 - **SKIP(장시간 가드): 주말 (NY 2026-09-12 09:40) — 정규장 외 발화, 주문 없이 종료** (수동 강제: EXECUTE_FORCE=1)
 
