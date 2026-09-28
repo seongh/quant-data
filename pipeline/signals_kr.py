@@ -5,8 +5,14 @@
 오버레이: 변동성 타게팅 연 10% (현 목표비중을 과거 63일에 적용한 실현변동성 기준, 축소만)
 검증: OOS(2021~2026) 샤프 0.92, MDD -14.0% (07_한국확장_백테스트)
 출력: signals/kr_target_weights.json
+
+2026-09-28 패치 — KR 위원회 결정 브리지 (R-33′):
+  decisions/approved_kr.json 을 decision.py 로 판정해 overrides(기본 cap)를 적용하고
+  source·decision_state 를 기록한다. 결정이 valid 가 아니면 preflight·execute_kr 가 집행을 정지한다.
+  (이전에는 KR 에 결정 경로 자체가 없어 모든 KR 주문이 헌법 3조를 소명할 수 없었다.)
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +21,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 KRX_DIR = ROOT / "data" / "krx"
 OUT = ROOT / "signals" / "kr_target_weights.json"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import decision as D  # 위원회 결정 브리지 단일 소스 (US·KR 공용)
 
 ETF = ["069500", "229200", "132030", "148070", "153130", "133690"]
 CASH = "153130"   # 단기채 = 현금성
@@ -95,13 +103,19 @@ def main():
     if excess > 0:  # 반올림 오차로 합>1이면 현금성에서 차감 (헌법 1조 보장)
         big = CASH if CASH in final else max(final, key=final.get)
         final[big] = round(final[big] - excess, 6)
+    dec, dstate, note = D.load_decision("kr", ROOT / "decisions")
+    source = D.source_label(dstate, note, "K조합 원신호")
+    if dec is not None:
+        final = D.apply_overrides(final, dec, CASH)
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
         "date": str(d.date()), "vt_scale": round(scale, 3),
+        "source": source, "decision_state": dstate,
         "weights": final,
         "names": {t: names.get(t, t) for t in final},
     }, ensure_ascii=False, indent=1))
-    print(f"{d.date()} KR 목표비중 {len(final)}종목, VT스케일 {scale:.2f}, 합계 {sum(final.values()):.4f}")
+    print(f"{d.date()} KR 목표비중 {len(final)}종목, VT스케일 {scale:.2f}, 합계 {sum(final.values()):.4f}, "
+          f"소스: {source}, 결정상태={dstate}")
 
 
 if __name__ == "__main__":
