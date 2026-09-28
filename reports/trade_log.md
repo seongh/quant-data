@@ -1,3 +1,19 @@
+# 집행 로그 2026-09-28
+- 소스: 위원회 결정 오버레이 (2026-09-25 정례위원회 승인안 (9/18 최종안 재승인)) (2026-09-25)
+- 계좌: $99,241 (현금 $3,895, 고점대비 -1.1%)
+- HOLD(MR 동결 mr_policy=hold) ADI ≈$1,000 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ADP ≈$871 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AIZ ≈$954 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMGN ≈$1,020 보유 유지
+- HOLD(MR 동결 mr_policy=hold) APD ≈$979 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ARE ≈$713 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AWK ≈$978 보유 유지
+- 매수 예산: 재조회 현금 $3,895 × 95% = $3,700
+- BUY BIL $3,700
+- SKIP(현금부족) EEM buy
+
+---
+
 # 집행 로그 2026-09-26
 - **SKIP(장시간 가드): 주말 (NY 2026-09-26 09:40) — 정규장 외 발화, 주문 없이 종료** (수동 강제: EXECUTE_FORCE=1)
 
