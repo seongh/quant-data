@@ -2,7 +2,8 @@
 
 우선순위:
 1. DECISION_URL(위원회 결정 JSON, 환경변수)이 설정되어 있고 오늘자면 그 비중 사용
-2. 아니면 signals/target_weights.json (검증된 F1 시스템) 사용 — fail-safe 기본값
+2. 아니면 signals/target_weights.json 사용. 이 파일의 decision_state 가 "valid" 가 아니면
+   (위원회 결정 만료·부재) 주문 없이 종료한다 — 2026-09-28 패치 C-21 (만료 = 정지, fail-closed)
 
 헌법 강제 (코드 레벨):
 - 비중 합 > 100% 거부 (1조: 무레버리지) / 개별 종목(ETF 제외) > 10% 거부 (4조)
@@ -13,10 +14,19 @@
 - 뉴욕 정규장(09:30~15:45 ET, 평일·휴장일 제외) 밖에서 발화하면 주문 없이 종료 (장시간 가드 — 조용한 큐잉·체결일 괴리 방지)
 - 매수 우선순위: 목표갭(달러) 내림차순 — 알파벳순 예산 선점(결함 F, 2026-09-04) 차단
 - 실제 주문 회차마다 signals/last_executed_us.txt 에 ET 날짜 기록 → 같은 날 2회 집행 차단 (멱등 가드 입력)
+
+2026-09-28 패치 (위원회 배포 대기열):
+- 결함 H′-1: 매도 접수 후 브로커 현금이 매도대금을 반영할 때까지 폴링(최대 SETTLE_POLLS회) 후 매수 예산 산정.
+  min(스냅샷+매도, 재조회 현금)의 1조 이중방어는 유지 (R-28: min() 단순 삭제 금지)
+- 결함 N: 마커·집행 목표 스냅샷을 첫 주문 *전에* 기록, 로그는 예외가 나도 finally 에서 기록
+- 결함 S: 실제로 집행한 목표를 signals/last_executed_target_us.json 에 저장 → preflight 회전율 비교 기준
+- R-55 (6조): MIN_TRADE 미달로 생략한 종목을 로그에 1행으로 남김 (주문 불발생 사유 보존)
+- EXECUTE_FORCE 는 정확히 "1" 일 때만 장시간 가드 우회 ("0"·"false" 로 우회되던 문제)
 """
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -31,6 +41,8 @@ STATE = ROOT / "signals" / "account_state.json"  # 고점 기록 (서킷브레�
 LOG = ROOT / "reports" / "trade_log.md"
 HALT = ROOT / "decisions" / "HALT"           # 존재하면 집행 중단 (내용은 사유 메모)
 MARKER = ROOT / "signals" / "last_executed_us.txt"  # 실제 주문 회차의 ET 날짜 — 워크플로 멱등 가드가 읽음 (X7)
+LAST_TARGET = ROOT / "signals" / "last_executed_target_us.json"  # 실제 집행한 목표 — preflight 회전율 기준 (결함 S)
+SKIP_MARKER = ROOT / "signals" / "last_skipped_us.txt"  # SKIP 사유 기록 — 같은 날 같은 사유 로그 중복 방지 (H′-5)
 
 BASE = "https://paper-api.alpaca.markets"
 KEY = os.environ.get("ALPACA_KEY", "")
@@ -41,6 +53,9 @@ MIN_TRADE_USD = 200      # 이보다 작은 조정은 생략 (수수료·잡음 
 MAX_STOCK_W = 0.10
 DD_LIMIT = 0.15
 CASH_BUFFER = 0.95       # 매수에 쓰는 현금 비율 — 체결가 변동·수수료 여유 (결함 E)
+SETTLE_POLLS = 30        # 매도대금 반영 대기: 최대 폴링 횟수 (결함 H′-1)
+SETTLE_WAIT = 2.0        # 폴링 간격(초) → 최대 약 60초
+SETTLE_RATIO = 0.90      # 접수한 매도액의 90% 이상이 현금에 반영되면 대기 종료
 NY = ZoneInfo("America/New_York")
 
 
@@ -66,14 +81,14 @@ def api(path, method="GET", body=None):
         return json.loads(r.read())
 
 
-def load_targets() -> tuple[dict, str]:
+def load_targets() -> tuple[dict, str, bool]:
     url = os.environ.get("DECISION_URL", "").strip()
     if url:
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
                 dec = json.loads(r.read())
             if dec.get("date") == str(date.today()) and "weights" in dec:
-                return dec["weights"], f"위원회 결정 ({dec.get('meeting_id','?')})"
+                return dec["weights"], f"위원회 결정 ({dec.get('meeting_id','?')})", True
             print(f"[info] 위원회 결정이 오늘자 아님({dec.get('date')}) → 시스템 기본값 사용")
         except Exception as e:
             print(f"[warn] 위원회 결정 조회 실패: {e} → 시스템 기본값 사용")
@@ -81,7 +96,7 @@ def load_targets() -> tuple[dict, str]:
     # 신호 파일이 스스로 소스를 밝힘 ("F1 원신호" / "위원회 결정 오버레이 (...)") — 하드코딩 금지
     # (2026-09-01 위원회 발견: 라벨 하드코딩으로 8/28 이후 소스 라인 전부 오기)
     label = sig.get("source") or "F1 시스템 신호"
-    return sig["weights"], f"{label} ({sig['date']})"
+    return sig["weights"], f"{label} ({sig['date']})", False
 
 
 def mr_hold_policy() -> bool:
@@ -102,18 +117,46 @@ def validate(weights: dict) -> None:
             sys.exit(f"헌법 4조 위반: {t} {w:.1%} > 10% — 집행 거부")
 
 
+def decision_state() -> tuple[str, str]:
+    """신호 파일의 위원회 결정 상태. 키가 없으면(구버전 signals.py) 'legacy' — 기존 동작 유지."""
+    try:
+        sig = json.loads(SIGNALS.read_text())
+    except Exception as e:
+        return "error", f"신호 파일 해석 실패: {e}"
+    return str(sig.get("decision_state", "legacy")), str(sig.get("source", ""))
+
+
+def skip_once(reason_key: str, lines: list[str]) -> None:
+    """SKIP 로그를 하루·사유당 1회만 적재 (결함 H′-5: 다중 발화 시 로그 중복 적재)."""
+    today = f"{datetime.now(NY):%Y-%m-%d}"
+    stamp = f"{today} {reason_key}"
+    prev = SKIP_MARKER.read_text().strip() if SKIP_MARKER.exists() else ""
+    if prev == stamp:
+        print("\n".join(lines) + "\n(같은 날 같은 사유 SKIP 로그는 이미 기록됨 — 중복 적재 생략)")
+        return
+    SKIP_MARKER.parent.mkdir(exist_ok=True)
+    SKIP_MARKER.write_text(stamp + "\n")
+    write_log(lines)
+
+
 def main():
     if not KEY or not SECRET:
         sys.exit("ALPACA_KEY/ALPACA_SECRET 미설정 — GitHub Secrets 확인")
     if HALT.exists():
         reason = HALT.read_text().strip()[:200]
-        write_log([f"# 집행 로그 {date.today()}", f"- **HALT: decisions/HALT 존재 → 주문 없이 종료** ({reason or '사유 미기재'})"])
+        skip_once("HALT", [f"# 집행 로그 {date.today()}", f"- **HALT: decisions/HALT 존재 → 주문 없이 종료** ({reason or '사유 미기재'})"])
         return
     is_open, when = market_open_now()
-    if not is_open and not os.environ.get("EXECUTE_FORCE"):
-        write_log([f"# 집행 로그 {date.today()}", f"- **SKIP(장시간 가드): {when} — 정규장 외 발화, 주문 없이 종료** (수동 강제: EXECUTE_FORCE=1)"])
+    if not is_open and os.environ.get("EXECUTE_FORCE", "").strip() != "1":
+        skip_once("MARKET_CLOSED", [f"# 집행 로그 {date.today()}", f"- **SKIP(장시간 가드): {when} — 정규장 외 발화, 주문 없이 종료** (수동 강제는 EXECUTE_FORCE=1 일 때만)"])
         return
-    weights, source = load_targets()
+    weights, source, via_url = load_targets()
+    dstate, src = decision_state()
+    if not via_url and dstate not in ("valid", "legacy"):
+        # C-21: 결정 만료·부재·형식오류 → 정지. (legacy = decision_state 키가 없는 구버전 신호 → 기존 동작 유지)
+        skip_once(f"DECISION_{dstate}", [f"# 집행 로그 {date.today()}",
+                  f"- **HALT(위원회 결정 {dstate}): {src} — 헌법 3조, 유효한 승인안 없이 주문하지 않음 (C-21 fail-closed)**"])
+        return
     validate(weights)
     hold_mr = mr_hold_policy()
 
@@ -136,12 +179,15 @@ def main():
 
     # 목표 금액 vs 현재 → 주문 목록 (매도 먼저 → 현금 확보 후 매수)
     orders = []
+    below_min = []
     all_syms = set(weights) | set(positions)
     for s in sorted(all_syms):
         target_usd = equity * weights.get(s, 0.0)
         cur = positions.get(s, 0.0)
         diff = target_usd - cur
         if abs(diff) < MIN_TRADE_USD:
+            if abs(diff) >= 1.0:
+                below_min.append(f"{s} {diff:+,.0f}")
             continue
         side = "buy" if diff > 0 else "sell"
         if side == "buy" and halt_buys:
@@ -154,8 +200,41 @@ def main():
     # 매도 먼저, 매수는 목표갭(달러) 큰 순 — 예산이 부족할 때 알파벳 앞 종목(BIL)이
     # 선점하던 결함 F(2026-09-04, 2회 실증) 수정. 갭이 큰 종목 = 목표에서 가장 멀리 이탈한 종목부터 채움
     orders.sort(key=lambda o: (0 if o[1] == "sell" else 1, -o[2]))
+    if below_min:  # R-55: 주문 불발생 사유를 로그에 보존 (6조)
+        lines.append(f"- 미달 생략(MIN_TRADE ${MIN_TRADE_USD}, 목표−보유): " + ", ".join(below_min))
 
+    # 결함 N: 마커·집행 목표를 첫 주문 *전에* 기록 (중간 예외·재발화 시 이중 집행 차단)
+    MARKER.parent.mkdir(exist_ok=True)
+    MARKER.write_text(f"{datetime.now(NY):%Y-%m-%d}\n")
+    LAST_TARGET.write_text(json.dumps({"date": f"{datetime.now(NY):%Y-%m-%d}", "source": source,
+                                       "weights": weights}, ensure_ascii=False, indent=1))
+    try:
+        run_orders(orders, positions, weights, cash, lines)
+    finally:
+        if len(orders) == 0:
+            lines.append("- 조정 필요 없음 (목표와 현재 일치)")
+        write_log(lines)
+
+
+def wait_for_sell_proceeds(snapshot_cash: float, sold: float, lines: list[str]) -> float:
+    """결함 H′-1: 매도 접수 직후 무대기 재조회로 매도대금이 0~100% 누락되던 레이스를 봉합.
+    현금이 (스냅샷 + 매도액×SETTLE_RATIO) 이상이 되거나 SETTLE_POLLS회가 지나면 마지막 조회값을 반환."""
+    live = snapshot_cash
+    polls = 0
+    for polls in range(1, SETTLE_POLLS + 1):
+        live = float(api("/v2/account")["cash"])
+        if sold <= 0 or live >= snapshot_cash + sold * SETTLE_RATIO:
+            break
+        time.sleep(SETTLE_WAIT)
+    reflected = max(0.0, live - snapshot_cash)
+    ratio = reflected / sold if sold > 0 else 1.0
+    lines.append(f"- 매도대금 반영: ${reflected:,.0f} / 접수 ${sold:,.0f} ({ratio:.0%}, 조회 {polls}회)")
+    return live
+
+
+def run_orders(orders, positions, weights, cash, lines):
     budget = cash
+    sold = 0.0
     sell_failed = False
     buys_started = False
     for s, side, usd in orders:
@@ -168,12 +247,15 @@ def main():
                 # 실제 정산 가능 현금의 95%만 예산으로 사용. 스냅샷 현금 + 매도 추정액으로
                 # 매수하면 체결가 차이로 현금이 음수(1조 위반)가 되는 것을 차단.
                 try:
-                    live_cash = float(api("/v2/account")["cash"])
+                    live_cash = wait_for_sell_proceeds(cash, sold, lines)
                 except Exception as e:
                     live_cash = min(budget, cash)
                     lines.append(f"- WARN 현금 재조회 실패({str(e)[:60]}) → 보수적 예산 ${live_cash:,.0f}")
-                budget = max(0.0, min(budget, live_cash)) * CASH_BUFFER
-                lines.append(f"- 매수 예산: 재조회 현금 ${live_cash:,.0f} × {CASH_BUFFER:.0%} = ${budget:,.0f}")
+                # 1조 이중방어: 브로커 현금과 (스냅샷+성공 매도) 중 작은 값만 사용 — 어느 쪽도 초과 불가
+                bound = min(budget, live_cash)
+                budget = max(0.0, bound) * CASH_BUFFER
+                lines.append(f"- 매수 예산: min(스냅샷 ${cash:,.0f} + 매도 ${sold:,.0f}, 재조회 ${live_cash:,.0f})"
+                             f" = ${bound:,.0f} × {CASH_BUFFER:.0%} = ${budget:,.0f}")
                 buys_started = True
             usd = min(usd, budget)          # 현금 범위 내 (헌법 1조)
             if usd < MIN_TRADE_USD:
@@ -196,17 +278,12 @@ def main():
             # 주문이 성공했을 때만 예산 반영 — 매도 실패분을 현금으로 오인해
             # 마진(1조 위반)이 발생하는 것을 차단 (2026-08-26 결함 B 수정)
             budget = budget - usd if side == "buy" else budget + usd
+            if side == "sell":
+                sold += usd
         except Exception as e:
             lines.append(f"- FAIL {side} {s}: {str(e)[:120]}")
             if side == "sell":
                 sell_failed = True   # 매도 실패 시 같은 회차 매수 전면 중단 (현금 오인 방지)
-
-    if len(orders) == 0:
-        lines.append("- 조정 필요 없음 (목표와 현재 일치)")
-    # 실제 집행 회차(HALT·장시간 스킵 아님)만 마커 기록 — 워크플로 멱등 가드가 이 날짜로 중복 집행 차단
-    MARKER.parent.mkdir(exist_ok=True)
-    MARKER.write_text(f"{datetime.now(NY):%Y-%m-%d}\n")
-    write_log(lines)
 
 
 def write_log(lines):
