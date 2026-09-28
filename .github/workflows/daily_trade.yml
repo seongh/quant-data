@@ -73,7 +73,8 @@ jobs:
         run: python pipeline/reconcile.py us
 
       - name: 그림자 포트폴리오 기록 (거래 없음 — 실패해도 집행 무영향)
-        if: steps.idem.outputs.skip != 'true'
+        # always(): preflight 가 FAIL(예: 결정 만료로 C-21 정지)해도 그림자 기록은 끊기지 않아야 한다
+        if: always() && steps.idem.outputs.skip != 'true'
         continue-on-error: true
         run: python pipeline/shadow.py
 
