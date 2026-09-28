@@ -240,12 +240,19 @@ def main():
 
 def wait_for_sell_proceeds(base_ord: float, sold: float, lines: list[str]) -> dict:
     """결함 X-a: 매도 전 주문가능현금(base_ord) 대비 매도액의 SETTLE_RATIO 만큼 늘 때까지 폴링."""
-    bp, polls = None, 0
+    bp, polls, errs = None, 0, 0
     for polls in range(1, SETTLE_POLLS + 1):
         time.sleep(SETTLE_WAIT)
-        bp = get_buying_power()
+        try:
+            bp = get_buying_power()
+        except Exception as e:   # 호출 한도·일시 오류 1회로 대기 전체를 버리지 않는다 (리뷰 지적 1)
+            errs += 1
+            print(f"[warn] 매수가능조회 폴링 실패 {errs}회: {str(e)[:60]}")
+            continue
         if sold <= 0 or bp["ord_psbl_cash"] >= base_ord + sold * SETTLE_RATIO:
             break
+    if bp is None:
+        raise RuntimeError(f"매도 후 매수가능조회 {SETTLE_POLLS}회 전부 실패")
     grew = max(0.0, bp["ord_psbl_cash"] - base_ord)
     ratio = grew / sold if sold > 0 else 1.0
     lines.append(f"- 매수가능조회(매도 후): {fmt_bp(bp)}")
@@ -281,8 +288,10 @@ def run_orders(orders, names, cash, lines):
                         lines.append(f"- 매수가능조회: {fmt_bp(bp)}")
                     live_cash = bp["ord_psbl_cash"]   # ⚠️ max_buy_amt(미수 포함) 사용 금지 — 헌법 1조
                 except Exception as e:
-                    live_cash = max(0.0, min(budget, cash))
-                    lines.append(f"- WARN 매수가능조회 실패({str(e)[:60]}) → 보수적 예산 {live_cash:,.0f}원")
+                    # ⚠️ 폴백은 브로커가 확인해 준 '주문가능현금'만 쓴다. 스냅샷 예수금(dnca_tot_amt)은 D+2 기준이라
+                    # 미결제 매수가 차감되지 않아 주문가능현금보다 클 수 있다(9/28 실측 +5.89M) → 미수(1조 위반).
+                    live_cash = max(0.0, base_ord) if base_ord is not None else 0.0
+                    lines.append(f"- WARN 매수가능조회 실패({str(e)[:60]}) → 매도 전 주문가능현금 기준 보수적 예산 {live_cash:,.0f}원")
                 bound = min(budget, live_cash)   # 1조 이중방어 (R-28: 단순 삭제 금지)
                 budget = max(0.0, bound) * CASH_BUFFER
                 lines.append(f"- 매수 예산: min(스냅샷 {cash:,.0f} + 매도 {sold:,.0f}, 주문가능 {live_cash:,.0f})"

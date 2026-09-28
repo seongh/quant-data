@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -117,6 +118,19 @@ def validate(weights: dict) -> None:
             sys.exit(f"헌법 4조 위반: {t} {w:.1%} > 10% — 집행 거부")
 
 
+def ny_today() -> str:
+    """로그·마커의 날짜는 뉴욕 기준 (러너 UTC 날짜와 20:00 ET 이후 어긋나는 문제 — 리뷰 지적 7)."""
+    return f"{datetime.now(NY):%Y-%m-%d}"
+
+
+def already_ordered_today() -> int:
+    """브로커 측 멱등 가드 (리뷰 지적 3 / 결함 O 잔여): 오늘(ET) 이 계좌에 접수된 주문 수.
+    저장소 마커가 낡았거나(대기열 런이 옛 커밋을 checkout) push 실패로 유실돼도 이중 집행을 막는다."""
+    after = datetime.now(NY).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    orders = api(f"/v2/orders?status=all&limit=50&after={urllib.parse.quote(after)}")
+    return sum(1 for o in orders if o.get("status") not in ("canceled", "rejected", "expired"))
+
+
 def decision_state() -> tuple[str, str]:
     """신호 파일의 위원회 결정 상태. 키가 없으면(구버전 signals.py) 'legacy' — 기존 동작 유지."""
     try:
@@ -144,17 +158,28 @@ def main():
         sys.exit("ALPACA_KEY/ALPACA_SECRET 미설정 — GitHub Secrets 확인")
     if HALT.exists():
         reason = HALT.read_text().strip()[:200]
-        skip_once("HALT", [f"# 집행 로그 {date.today()}", f"- **HALT: decisions/HALT 존재 → 주문 없이 종료** ({reason or '사유 미기재'})"])
+        skip_once("HALT", [f"# 집행 로그 {ny_today()}", f"- **HALT: decisions/HALT 존재 → 주문 없이 종료** ({reason or '사유 미기재'})"])
         return
     is_open, when = market_open_now()
     if not is_open and os.environ.get("EXECUTE_FORCE", "").strip() != "1":
-        skip_once("MARKET_CLOSED", [f"# 집행 로그 {date.today()}", f"- **SKIP(장시간 가드): {when} — 정규장 외 발화, 주문 없이 종료** (수동 강제는 EXECUTE_FORCE=1 일 때만)"])
+        skip_once("MARKET_CLOSED", [f"# 집행 로그 {ny_today()}", f"- **SKIP(장시간 가드): {when} — 정규장 외 발화, 주문 없이 종료** (수동 강제는 EXECUTE_FORCE=1 일 때만)"])
+        return
+    try:
+        n_today = already_ordered_today()
+    except Exception as e:
+        n_today = 0
+        print(f"[warn] 오늘 주문 조회 실패({str(e)[:60]}) — 저장소 마커 가드에만 의존")
+    if n_today > 0:
+        skip_once("ALREADY_EXECUTED", [f"# 집행 로그 {ny_today()}",
+                  f"- **SKIP(이중 집행 차단): 오늘(ET) 이미 브로커에 주문 {n_today}건 접수됨 — 저장소 마커가 낡았거나 유실된 발화**"])
+        MARKER.parent.mkdir(exist_ok=True)
+        MARKER.write_text(ny_today() + "\n")   # 마커 복원 → 이후 발화는 워크플로 단계에서 조기 종료
         return
     weights, source, via_url = load_targets()
     dstate, src = decision_state()
     if not via_url and dstate not in ("valid", "legacy"):
         # C-21: 결정 만료·부재·형식오류 → 정지. (legacy = decision_state 키가 없는 구버전 신호 → 기존 동작 유지)
-        skip_once(f"DECISION_{dstate}", [f"# 집행 로그 {date.today()}",
+        skip_once(f"DECISION_{dstate}", [f"# 집행 로그 {ny_today()}",
                   f"- **HALT(위원회 결정 {dstate}): {src} — 헌법 3조, 유효한 승인안 없이 주문하지 않음 (C-21 fail-closed)**"])
         return
     validate(weights)
@@ -173,7 +198,7 @@ def main():
     STATE.write_text(json.dumps({"peak": peak, "last_equity": equity, "dd": round(dd, 4)}))
 
     positions = {p["symbol"]: float(p["market_value"]) for p in api("/v2/positions")}
-    lines = [f"# 집행 로그 {date.today()}", f"- 소스: {source}", f"- 계좌: ${equity:,.0f} (현금 ${cash:,.0f}, 고점대비 {dd:.1%})"]
+    lines = [f"# 집행 로그 {ny_today()}", f"- 소스: {source}", f"- 계좌: ${equity:,.0f} (현금 ${cash:,.0f}, 고점대비 {dd:.1%})"]
     if halt_buys:
         lines.append(f"- **서킷브레이커 발동 (낙폭 {dd:.1%} ≤ -15%): 신규 매수 전량 중단, 매도만 집행. 재개는 Jamie 승인 필요 (헌법 5조)**")
 

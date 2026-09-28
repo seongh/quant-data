@@ -23,8 +23,9 @@ import re
 import sys
 import time
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "pipeline"))
@@ -38,6 +39,9 @@ ETFS = {
 MIN_TRADE = {"us": 200.0, "kr": 200_000.0}
 MAX_STOCK_W = 0.10
 SETTLE_WAIT = 30  # 시장가 체결·현금 반영 대기(초)
+TZ = {"us": ZoneInfo("America/New_York"), "kr": ZoneInfo("Asia/Seoul")}
+# 집행기 자신이 남기는 '주문 없는 회차' 표식만 인정 — 줄 머리 고정 (자유 텍스트의 "HALT" 오인 방지, 리뷰 지적 5)
+NO_ORDER_RUN = re.compile(r"^- \*\*(HALT|SKIP\()", re.M)
 
 
 def fetch_us():
@@ -83,7 +87,7 @@ def mentioned(sym: str, block: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9]){re.escape(sym)}(?![A-Za-z0-9])", block) is not None
 
 
-def audit_positions(mkt, equity, cash, pos, target, block):
+def audit_positions(mkt, equity, cash, pos, target, block, check_drift=True):
     """실보유 대 목표 대사. (문제 목록, 표 행 목록, 기계용 dict) 반환."""
     problems, rows = [], []
     etfs, min_trade = ETFS[mkt], MIN_TRADE[mkt]
@@ -100,7 +104,7 @@ def audit_positions(mkt, equity, cash, pos, target, block):
         if s not in etfs and aw > MAX_STOCK_W + 1e-6:
             problems.append(f"헌법 4조(실보유): {s} {aw:.2%} > 10%")
             flag = "🔴 4조"
-        if abs(dev) >= min_trade and not logged:
+        if check_drift and abs(dev) >= min_trade and not logged:
             problems.append(f"조용한 괴리: {s} 목표 {tw:.2%} vs 실보유 {aw:.2%} (편차 {dev:+,.0f}) — 오늘 로그에 사유 없음")
             flag = (flag + " 🔴 무기록").strip()
         rows.append(f"| {s} | {tw:.2%} | {aw:.2%} | {dev:+,.0f} | {'O' if logged else '-'} | {flag} |")
@@ -126,41 +130,47 @@ def write_reports(mkt, equity, cash, pos, target, target_src, rows, detail, prob
 
 def main():
     mkt = sys.argv[1] if len(sys.argv) > 1 else "us"
+    today = f"{datetime.now(TZ[mkt]):%Y-%m-%d}"   # 시장 현지 날짜 (러너 UTC 와 어긋남 방지, 리뷰 지적 7)
     log_path = ROOT / LOGS[mkt]
     problems = []
 
+    block = ""
     if not log_path.exists():
-        sys.exit("[RECONCILE FAIL] 집행 로그 파일 없음")
-    today_block = log_path.read_text().split("\n---\n")[0]
-    header = today_block.splitlines()[0] if today_block.splitlines() else ""
-    if str(date.today()) not in header:
-        sys.exit(f"[RECONCILE FAIL] 오늘자 집행 로그 없음 (최신: {header[:40]})")
-    if "HALT" in today_block or "SKIP(장시간 가드)" in today_block:
-        print(f"[reconcile] 오늘은 주문 없는 회차(HALT/SKIP) — 대사 생략")
-        return
-
-    fails = [l.strip() for l in today_block.splitlines() if l.strip().startswith("- FAIL")]
+        problems.append("집행 로그 파일 없음")
+    else:
+        block = log_path.read_text().split("\n---\n")[0]
+        header = block.splitlines()[0] if block.splitlines() else ""
+        if today not in header:
+            problems.append(f"오늘({today}) 집행 로그 없음 — preflight 정지일이면 reports/preflight_{mkt}.md 확인 (최신: {header[:40]})")
+            block = ""
+    fails = [l.strip() for l in block.splitlines() if l.strip().startswith("- FAIL")]
     if fails:
         problems.append(f"실패 주문 {len(fails)}건 — " + " / ".join(f[:70] for f in fails[:3]))
+    no_order_run = bool(NO_ORDER_RUN.search(block)) or not block
 
+    # 계좌 검사는 로그 상태와 무관하게 항상 수행 — HALT·SKIP·preflight 정지일에도 미결제 매수 정산으로
+    # 예수금이 음수가 될 수 있다 (결함 H: 9/11 −35,969원). 리뷰 지적 6
     if not has_keys(mkt):
         print(f"[reconcile] {mkt.upper()} 브로커 키 없음 — 계좌 검사 생략")
     else:
-        time.sleep(SETTLE_WAIT)
+        if not no_order_run:
+            time.sleep(SETTLE_WAIT)
         equity, cash, pos = fetch_us() if mkt == "us" else fetch_kr()
         unit = "$" if mkt == "us" else "원"
         print(f"[reconcile] 평가 {equity:,.0f}{unit} / 현금 {cash:,.0f}{unit} / 보유 {len(pos)}종목")
         if cash < 0.0:  # 허용오차 없음 (게이트 B1: -$2도 1조 위반, 2026-09-08)
             problems.append(f"현금 음수 {cash:,.2f}{unit} — 헌법 1조(무레버리지) 위반 상태")
         target, target_src = load_target(mkt)
-        pos_problems, rows, detail = audit_positions(mkt, equity, cash, pos, target, today_block)
+        # 조용한 괴리 검사는 주문이 실제로 나간 회차에만 (주문 없는 회차엔 로그에 종목이 없는 게 정상)
+        pos_problems, rows, detail = audit_positions(mkt, equity, cash, pos, target, block,
+                                                     check_drift=not no_order_run)
         problems += pos_problems
         write_reports(mkt, equity, cash, pos, target, target_src, rows, detail, pos_problems)
         print(f"[reconcile] 실보유 대사 기록 → reports/reconcile_{mkt}.md, reports/positions_{mkt}.json")
 
     if problems:
         sys.exit("[RECONCILE FAIL] " + " | ".join(problems))
-    print(f"[reconcile] PASS — {mkt} 대사 이상 없음")
+    print(f"[reconcile] PASS — {mkt} 대사 이상 없음" + (" (주문 없는 회차)" if no_order_run else ""))
 
 
 if __name__ == "__main__":

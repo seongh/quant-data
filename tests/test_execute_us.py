@@ -123,3 +123,59 @@ def test_hold_policy_keeps_mr_positions(tmp_path, monkeypatch):
     assert all(f"HOLD(MR 동결 mr_policy=hold) {t}" in log for t in MR_OLD)
     assert not any(o[0] == "sell" and o[1] in MR_OLD for o in fake.orders)
     assert fake.cash >= 0
+
+
+def test_broker_side_dedupe_blocks_second_run(tmp_path, monkeypatch):
+    """리뷰 지적 3: 대기열 런이 옛 커밋(마커 이전)을 읽어도 브로커에 오늘 주문이 있으면 재집행하지 않는다."""
+    fake = FakeAlpaca(50_000, {}, settle_after=0)
+    fake.extra_orders = [{"id": "x", "symbol": "SPY", "side": "buy", "status": "filled"}]
+    ex = load_us(tmp_path, monkeypatch, fake, {"SPY": 0.5, "BIL": 0.5})
+    ex.main()
+    assert fake.orders == []
+    assert "SKIP(이중 집행 차단)" in ex.LOG.read_text() and ex.MARKER.exists()
+
+
+def test_rejected_orders_today_do_not_block(tmp_path, monkeypatch):
+    fake = FakeAlpaca(50_000, {}, settle_after=0)
+    fake.extra_orders = [{"id": "x", "symbol": "SPY", "side": "buy", "status": "rejected"}]
+    ex = load_us(tmp_path, monkeypatch, fake, {"SPY": 0.5, "BIL": 0.5})
+    ex.main()
+    assert fake.orders
+
+
+def test_r28_min_guard_caps_budget_even_if_broker_overreports(tmp_path, monkeypatch):
+    """R-28: 브로커 현금이 부풀려 보고돼도 예산은 (스냅샷+성공 매도)×95%를 넘지 않는다."""
+    fake = FakeAlpaca(3170, {**MR_OLD, **CORE}, settle_after=0)
+    real = fake.api
+
+    def inflated(path, method="GET", body=None):
+        r = real(path, method, body)
+        if path == "/v2/account" and fake.account_calls > 1:
+            r = dict(r, cash=str(float(r["cash"]) + 50_000))   # 가상의 과대 보고
+        return r
+    eq = fake.equity
+    w = {"SPY": 18_000 / eq} | {t: 0.03 for t in ("ADI", "AMGN", "APD", "ARE", "CB", "ADM", "AAPL")}
+    w["BIL"] = 1 - sum(w.values())          # 합계 1.0 (1조) — 부족분은 BIL 매도로 조달되지 않도록 BIL 은 축소만
+    ex = load_us(tmp_path, monkeypatch, fake, w)
+    monkeypatch.setattr(ex, "api", inflated)
+    ex.main()
+    bought = sum(o[2] for o in fake.orders if o[0] == "buy")
+    sold = sum(o[2] for o in fake.orders if o[0] == "sell")
+    need = 7 * 0.03 * eq
+    assert need > (3170 + sold) * 0.95          # 가드가 실제로 구속하는 상황인지 확인
+    assert bought <= (3170 + sold) * 0.95 + 1, (bought, sold)
+
+
+def test_marker_exists_at_first_order(tmp_path, monkeypatch):
+    """결함 N: 첫 주문이 브로커에 닿는 순간 이미 실집행 마커가 디스크에 있어야 한다."""
+    fake = FakeAlpaca(50_000, {"AES": 1000}, settle_after=0)
+    ex = load_us(tmp_path, monkeypatch, fake, {"SPY": 0.5, "BIL": 0.5})
+    real, seen = fake.api, []
+
+    def spy(path, method="GET", body=None):
+        if method in ("POST", "DELETE"):
+            seen.append(ex.MARKER.exists() and ex.LAST_TARGET.exists())
+        return real(path, method, body)
+    monkeypatch.setattr(ex, "api", spy)
+    ex.main()
+    assert seen and all(seen)

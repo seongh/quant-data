@@ -36,6 +36,7 @@ CFG = {
 }
 MAX_STOCK_W = 0.10
 MAX_BUY_TURNOVER = 0.30
+MAX_BASELINE_AGE_TDAYS = 3   # 실집행 목표가 이보다 오래되면 회전율 기준으로 쓰지 않는다
 
 # 휴장일 (2026 하반기~2027 초). 누락 시 오탐은 "집행 1일 스킵"이라 안전 방향.
 HOLIDAYS = {
@@ -142,7 +143,12 @@ def main():
     if last_exec.exists():
         try:
             j = json.loads(last_exec.read_text())
-            prev, base = j["weights"], f"마지막 실집행 {j.get('date', '?')}"
+            age = trading_days_between(mkt, date.fromisoformat(j["date"]), datetime.now(TZ[mkt]).date())
+            if age <= MAX_BASELINE_AGE_TDAYS:
+                prev, base = j["weights"], f"마지막 실집행 {j['date']}, {age}거래일 전"
+            else:
+                # 장기 정지(결정 만료 등) 뒤에는 누적된 정상 신호 변화가 30%를 넘어 영구 차단될 수 있다 (리뷰 지적 4)
+                print(f"[preflight] 실집행 목표가 {age}거래일 전({j['date']}) — 낡은 기준, HEAD 신호로 대체")
         except Exception as e:
             print(f"[preflight] 실집행 목표 해석 실패({e}) — HEAD 신호로 대체")
     if prev is None:

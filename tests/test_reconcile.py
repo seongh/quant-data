@@ -88,3 +88,31 @@ def test_kr_codes_and_halt_day(tmp_path, monkeypatch):
     R2 = setup(tmp_path / "h", monkeypatch, "kr", ["- **HALT(위원회 결정 missing): ...**"], target, 1, 1, {}) \
         if (tmp_path / "h").mkdir() is None else None
     R2.main()  # 주문 없는 회차는 대사 생략
+
+
+def test_halt_word_in_free_text_does_not_skip_audit(tmp_path, monkeypatch):
+    """리뷰 지적 5: 회의명에 'HALT' 가 들어가도 정상 회차의 FAIL·4조 검사를 건너뛰지 않는다."""
+    lines = ["- 소스: 위원회 결정 오버레이 (HALT 해제 및 재승인)", "- FAIL buy NVDA: 403"]
+    R = setup(tmp_path, monkeypatch, "us", lines, {"BIL": 1.0}, 100_000, 0, {"BIL": 100_000})
+    with pytest.raises(SystemExit) as e:
+        R.main()
+    assert "실패 주문 1건" in str(e.value)
+
+
+def test_negative_cash_checked_on_halt_day(tmp_path, monkeypatch):
+    """리뷰 지적 6: HALT·SKIP 날에도 예수금 음수(결함 H 유형)는 잡아야 한다."""
+    R = setup(tmp_path, monkeypatch, "kr", ["- **HALT(위원회 결정 missing): ...**"],
+              {"153130": 1.0}, 500_000_000, -35_969, {"153130": 500_035_969})
+    with pytest.raises(SystemExit) as e:
+        R.main()
+    assert "현금 음수" in str(e.value)
+
+
+def test_no_log_today_still_writes_positions(tmp_path, monkeypatch):
+    """preflight 정지일(오늘 로그 없음)에도 실보유 보고서는 남고, 실패 사유가 안내된다."""
+    R = setup(tmp_path, monkeypatch, "us", [], {"BIL": 1.0}, 100_000, 0, {"BIL": 100_000})
+    (tmp_path / "reports/trade_log.md").write_text("# 집행 로그 2000-01-01\n- old\n")
+    with pytest.raises(SystemExit) as e:
+        R.main()
+    assert "preflight 정지일이면" in str(e.value)
+    assert (tmp_path / "reports/positions_us.json").exists()

@@ -22,6 +22,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 트리거 시점 SHA 가 아니라 '실행 시점 최신 브랜치'를 받는다 — 대기열에서 기다린 런이 실집행 마커 이전
+          # 커밋을 읽어 같은 날 재집행하는 경로 차단 (2026-09-28 리뷰 지적 3)
+          ref: ${{ github.ref_name }}
 
       - name: 멱등 가드 (오늘 이미 실제 집행했으면 이후 단계 전부 스킵 — 이중 집행 차단)
         id: idem
@@ -62,7 +66,8 @@ jobs:
         run: python pipeline/execute_kr.py
 
       - name: 사후 대사 (계층 3 — 조용한 실패 봉쇄 + KR 현금 음수 검사, 결함 H)
-        if: steps.idem.outputs.skip != 'true'
+        # always(): preflight 정지일에도 예수금 음수·실보유 4조 감시는 계속 (리뷰 지적 2·6)
+        if: always() && steps.idem.outputs.skip != 'true'
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}

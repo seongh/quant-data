@@ -43,6 +43,9 @@ class FakeAlpaca:
             self.orders.append(("sell", s, amt))
             self.pending.append([self.settle_after, amt])
             return {"id": f"o{len(self.orders)}", "symbol": s}
+        if path.startswith("/v2/orders?") and method == "GET":
+            return [{"id": f"o{i}", "symbol": o[1], "side": o[0], "status": "filled"}
+                    for i, o in enumerate(self.orders)] + list(getattr(self, "extra_orders", []))
         if path == "/v2/orders" and method == "POST":
             s, side, usd = body["symbol"], body["side"], float(body["notional"])
             if side == "buy":
