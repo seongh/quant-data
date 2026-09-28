@@ -7,6 +7,14 @@
       수집이 멈추면 신호도 멈추고 집행도 멈춘다. 예외: PREFLIGHT_MAX_STALE_TDAYS=N) /
       비현금 매수 회전율 ≤30% (직전 커밋 신호 대비 — 인공물성 대량 교체 감지.
       현금성으로의 이동(위험 축소)은 무제한 허용)
+
+2026-09-28 패치:
+- C-21: 신호의 decision_state 가 'valid' 가 아니면 FAIL (위원회 결정 만료·부재·형식오류 = 집행 정지).
+  키가 없는 구버전 신호는 검사 생략(독립 배포 가능).
+- 결함 S: 회전율 비교 기준을 '직전 git 커밋 신호'에서 '마지막으로 실제 집행한 목표'
+  (signals/last_executed_target_{us,kr}.json)로 교체. 주말·SKIP 런이 커밋한 신호를 자기 자신과
+  비교해 0.0%를 보고하던 문제(9/28 실증: 보고 0.0% vs 실제 약 8pp) 봉합. 파일이 없을 때만 HEAD 사용.
+- 판정 결과를 reports/preflight_{us,kr}.md 에 기록 — Actions 로그 없이도 저장소에서 감사 가능.
 """
 import json
 import os
@@ -71,15 +79,38 @@ def check_freshness(mkt, sig_date: str, today: date | None = None) -> str | None
     return None
 
 
+_MKT = {"v": "us"}
+
+
+def record(status: str, msg: str) -> None:
+    """판정 결과를 reports/preflight_{mkt}.md 맨 위에 1행으로 남긴다 (최근 300행 유지)."""
+    try:
+        f = ROOT / "reports" / f"preflight_{_MKT['v']}.md"
+        f.parent.mkdir(exist_ok=True)
+        prev = f.read_text().splitlines() if f.exists() else []
+        body = [l for l in prev if l.startswith("- ")][:299]
+        stamp = datetime.now(TZ[_MKT["v"]]).strftime("%Y-%m-%d %H:%M %Z")
+        f.write_text(f"# preflight 판정 기록 ({_MKT['v'].upper()}, 최신이 위)\n\n"
+                     + "\n".join([f"- {stamp} **{status}** {msg}"] + body) + "\n")
+    except Exception as e:  # 기록 실패가 판정을 바꾸지 않는다
+        print(f"[preflight] 기록 실패: {e}")
+
+
 def fail(msg):
+    record("FAIL", msg)
     sys.exit(f"[PREFLIGHT FAIL] {msg}")
 
 
 def main():
     mkt = sys.argv[1] if len(sys.argv) > 1 else "us"
+    _MKT["v"] = mkt
     c = CFG[mkt]
     sig = json.loads((ROOT / c["sig"]).read_text())
     w = sig["weights"]
+
+    ds = sig.get("decision_state")
+    if ds is not None and ds != "valid":  # C-21: 만료 = 정지 (헌법 3조)
+        fail(f"위원회 결정 상태 '{ds}' — {sig.get('source', '')} → 유효한 승인안 없이 집행하지 않음")
 
     s = sum(w.values())
     if not (0.995 <= s <= 1.0 + 1e-9):
@@ -105,21 +136,31 @@ def main():
     if missing:
         fail(f"당일 데이터에 없는 종목: {missing[:5]}")
 
-    # 회전율 급변 감지 — 직전 커밋(HEAD) 신호 대비, 현금성 매수는 제외
-    prev = None
-    try:
-        out = subprocess.run(["git", "show", f"HEAD:{c['sig']}"],
-                             capture_output=True, text=True, check=True, cwd=ROOT)
-        prev = json.loads(out.stdout)["weights"]
-    except Exception:
-        print("[preflight] 직전 커밋 신호 없음 — 회전율 검사 생략")
+    # 회전율 급변 감지 — 마지막 실집행 목표 대비(결함 S), 없으면 직전 커밋(HEAD) 신호. 현금성 매수 제외
+    prev, base = None, ""
+    last_exec = ROOT / "signals" / f"last_executed_target_{mkt}.json"
+    if last_exec.exists():
+        try:
+            j = json.loads(last_exec.read_text())
+            prev, base = j["weights"], f"마지막 실집행 {j.get('date', '?')}"
+        except Exception as e:
+            print(f"[preflight] 실집행 목표 해석 실패({e}) — HEAD 신호로 대체")
+    if prev is None:
+        try:
+            out = subprocess.run(["git", "show", f"HEAD:{c['sig']}"],
+                                 capture_output=True, text=True, check=True, cwd=ROOT)
+            prev, base = json.loads(out.stdout)["weights"], "HEAD 커밋 신호(대체 기준)"
+        except Exception:
+            print("[preflight] 비교 기준 신호 없음 — 회전율 검사 생략")
     if prev is not None:
         buy_turn = sum(max(0.0, w.get(t, 0.0) - prev.get(t, 0.0))
                        for t in set(w) | set(prev) if t not in c["cash"])
         if buy_turn > MAX_BUY_TURNOVER:
-            fail(f"비현금 매수 회전율 {buy_turn:.1%} > {MAX_BUY_TURNOVER:.0%} — 신호 급변(인공물 의심), 집행 차단")
-        print(f"[preflight] 매수 회전율 {buy_turn:.1%} OK")
+            fail(f"비현금 매수 회전율 {buy_turn:.1%} > {MAX_BUY_TURNOVER:.0%} (기준: {base}) — 신호 급변(인공물 의심), 집행 차단")
+        print(f"[preflight] 매수 회전율 {buy_turn:.1%} OK (기준: {base})")
 
+    turn_txt = f", 매수회전 {buy_turn:.1%} (기준: {base})" if prev is not None else ", 회전율 검사 생략"
+    record("PASS", f"{sig['date']} {len(w)}종목, 합계 {s:.6f}{turn_txt}, 결정상태 {ds or 'legacy'}")
     print(f"[preflight] PASS — {mkt} {sig['date']} {len(w)}종목, 합계 {s:.6f}")
 
 

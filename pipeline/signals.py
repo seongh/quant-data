@@ -5,12 +5,15 @@
 검증 근거: OOS(2020~2026) 샤프 0.75, MDD -14.8% (프로젝트 05_백테스트_최종보고)
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import decision as D  # 위원회 결정 브리지 단일 소스 (2026-09-28, US·KR 공용)
 PRICES_DIR = ROOT / "data" / "prices"
 OUT = ROOT / "signals" / "target_weights.json"
 
@@ -110,26 +113,19 @@ def mean_reversion_weights(close, n_slots=10):
 
 
 def load_decision():
-    """decisions/approved.json 이 존재하고 유효기간 내면 (dict, 소스라벨), 아니면 (None, 소스라벨).
-    만료·오류 시 None → F1 원신호로 자동 복귀 (fail-safe)."""
-    dec_file = ROOT / "decisions" / "approved.json"
-    if not dec_file.exists():
-        return None, "F1 원신호"
-    try:
-        dec = json.loads(dec_file.read_text())
-        from datetime import date as _date
-        if str(_date.today()) <= str(dec.get("valid_until", "")):
-            return dec, f"위원회 결정 오버레이 ({dec.get('meeting_id', '?')})"
-        return None, f"F1 원신호 (결정 만료: {dec.get('valid_until', '?')})"
-    except Exception as e:
-        print(f"[warn] 결정 파일 해석 실패: {e} → F1 원신호 사용")
-        return None, "F1 원신호 (결정 파일 오류)"
+    """호환 래퍼 — 판정은 decision.py 가 한다 (C-21 fail-closed, R-26 ISO 검증, override cap).
+
+    반환: (유효한 결정 dict 또는 None, 소스 라벨, 상태). 상태가 'valid' 가 아니면 이 신호로는
+    집행하지 않는다 — preflight·execute 가 decision_state 를 보고 독립적으로 정지한다.
+    (구버전 docstring 은 만료 시 F1 복귀를 'fail-safe' 라 불렀으나 실제로는 fail-open 이었다: 결함 L)"""
+    dec, state, note = D.load_decision("us", ROOT / "decisions")
+    return dec, D.source_label(state, note, "F1 원신호"), state
 
 
 def main():
     close = load_close()
     d = close.index[-1]
-    dec, source = load_decision()
+    dec, source, dstate = load_decision()
     # MR 슬리브 스칼라 (2026-08-28 위원회 스키마 확장 → 2026-09-02 구현):
     # approved.json 최상위 "mr_scale" (0.0~1.0). 0.0 = 결함 C 동결(#2026-0826-01) —
     # MR 신규 진입·교체 차단. 비운 비중은 아래 "MR 슬리브 미충족분은 현금(BIL)"이 자동 흡수.
@@ -169,30 +165,21 @@ def main():
         big = "BIL" if "BIL" in total else max(total, key=total.get)
         total[big] = round(total[big] - excess, 6)
 
-    # 위원회 결정 브리지 (2026-08-28): decisions/approved.json 이 유효하면
-    # 승인된 비중으로 오버레이. 만료·오류 시 F1 원신호로 자동 복귀 (fail-safe).
+    # 위원회 결정 브리지 (2026-08-28 → 2026-09-28 개정): 유효한 결정이면 overrides 적용.
+    # 기본 의미론은 cap(리스크 축소 방향만). 결정이 valid 가 아니면 비중은 기록용 F1 원신호이며
+    # decision_state 가 집행을 막는다 (만료 = 정지, C-21).
     if dec is not None:
-        for t, w in dec.get("overrides", {}).items():
-            total[t] = float(w)
-        diff = round(1.0 - sum(total.values()), 6)
-        total["BIL"] = round(total.get("BIL", 0.0) + diff, 6)  # 잔여/초과분은 현금성으로
-        if total["BIL"] < 0:  # 안전장치: 현금성이 음수면 위험자산 전체를 비례 축소
-            s2 = sum(v for k, v in total.items() if k != "BIL")
-            total = {k: round(v / s2, 6) for k, v in total.items() if k != "BIL"}
-        total = {t: w for t, w in total.items() if w > 0.0005}
-        excess = round(sum(total.values()) - 1.0, 6)
-        if excess > 0:
-            big = "BIL" if "BIL" in total else max(total, key=total.get)
-            total[big] = round(total[big] - excess, 6)
+        total = D.apply_overrides(total, dec, "BIL")
 
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps({"date": str(d.date()), "source": source, "weights": total,
+    OUT.write_text(json.dumps({"date": str(d.date()), "source": source, "decision_state": dstate,
+                               "weights": total,
                                "mr_scale": mr_scale, "mr_policy": mr_policy,
                                "mr_raw": {t: round(w, 4) for t, w in mr_raw.items()},  # 스케일 전 MR 원신호 (기록용)
                                "sleeves": {k: {t: round(w, 4) for t, w in v.items()} for k, v in sleeves.items()}},
                               ensure_ascii=False, indent=1))
     print(f"{d.date()} 목표비중 {len(total)}종목, 합계 {sum(total.values()):.4f}, 소스: {source}, "
-          f"mr_scale={mr_scale} ({mr_policy}) -> {OUT}")
+          f"mr_scale={mr_scale} ({mr_policy}), 결정상태={dstate} -> {OUT}")
 
 
 if __name__ == "__main__":
