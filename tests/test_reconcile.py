@@ -1,7 +1,8 @@
 """reconcile.py 테스트 — 결함 Q(실보유 대 목표 대사)."""
 import importlib
 import json
-from datetime import date
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -16,7 +17,8 @@ def setup(tmp_path, monkeypatch, mkt, log_lines, target, equity, cash, pos):
     (tmp_path / "reports").mkdir(); (tmp_path / "signals").mkdir()
     name = "trade_log.md" if mkt == "us" else "kr_trade_log.md"
     head = "# 집행 로그" if mkt == "us" else "# KR 집행 로그"
-    (tmp_path / "reports" / name).write_text("\n".join([f"{head} {date.today()}", *log_lines]) + "\n\n---\n\nold")
+    today = f"{datetime.now(ZoneInfo('America/New_York' if mkt == 'us' else 'Asia/Seoul')):%Y-%m-%d}"
+    (tmp_path / "reports" / name).write_text("\n".join([f"{head} {today}", *log_lines]) + "\n\n---\n\nold")
     (tmp_path / "signals" / f"last_executed_target_{mkt}.json").write_text(json.dumps({"weights": target}))
     monkeypatch.setattr("sys.argv", ["reconcile.py", mkt])
     return R
