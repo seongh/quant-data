@@ -1,0 +1,25 @@
+name: tests
+
+# 파이프라인 회귀 테스트 (2026-09-28 신설) — 가짜 브로커 사용, 실제 주문·네트워크 없음.
+# 결함 H′-1·X-a·C-21·R-26·S·Q·N·H′-5 재현 테스트가 포함돼 있어, 수정이 되돌려지면 실패한다.
+on:
+  push:
+    paths: ["pipeline/**", "tests/**", "decisions/**", ".github/workflows/tests.yml"]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests
