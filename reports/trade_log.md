@@ -1,3 +1,22 @@
+# 집행 로그 2026-10-06
+- 소스: 위원회 결정 오버레이 (2026-09-25 정례위원회 승인안 (9/18 최종안 재승인)) (2026-10-05)
+- 계좌: $99,848 (현금 $11,133, 고점대비 -0.5%)
+- HOLD(MR 동결 mr_policy=hold) ADI ≈$1,072 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ADP ≈$871 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AIZ ≈$961 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AMGN ≈$985 보유 유지
+- HOLD(MR 동결 mr_policy=hold) APD ≈$982 보유 유지
+- HOLD(MR 동결 mr_policy=hold) ARE ≈$678 보유 유지
+- HOLD(MR 동결 mr_policy=hold) AWK ≈$966 보유 유지
+- SELL SPY $5,187
+- 매수 예산: 재조회 현금 $11,133 × 95% = $10,576
+- BUY IWM $10,576
+- SKIP(현금부족) BIL buy
+- SKIP(현금부족) EEM buy
+- SKIP(현금부족) QQQ buy
+
+---
+
 # 집행 로그 2026-10-05
 - **SKIP(장시간 가드): 정규장 외 (NY 2026-10-05 17:29) — 정규장 외 발화, 주문 없이 종료** (수동 강제: EXECUTE_FORCE=1)
 
