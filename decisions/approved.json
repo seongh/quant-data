@@ -1,10 +1,10 @@
 {
  "meeting_id": "2026-09-25 정례위원회 승인안 (9/18 최종안 재승인)",
  "approved_date": "2026-09-25",
- "valid_until": "2026-10-16",
+ "valid_until": "2026-11-13",
  "market": "us",
  "mr_scale": 0.0,
  "mr_policy": "hold",
  "overrides": {},
- "notes": "9/25 재승인본. overrides 0건 / mr_scale 0.0 / mr_policy hold / valid_until ISO 절대일자."
+ "notes": "9/25 재승인본. overrides 0건 / mr_scale 0.0 / mr_policy hold / valid_until ISO 절대일자. | 2026-10-11 Jamie 연장 승인: valid_until 2026-10-16 → 2026-11-13. 비중·mr_scale·mr_policy·overrides 무변경 (10/19 만료 fail-open 방지)."
 }
