@@ -9,6 +9,7 @@
 - 계좌 고점 대비 -15% 이하면 신규 매수 전량 중단, 매도만 허용 (5조 서킷브레이커)
 - 매수는 반드시 현금 범위 내 (Alpaca paper도 마진 계좌지만 코드로 현금 초과 매수 차단)
 - 매수 직전 브로커 현금을 다시 조회하고 95%만 사용 (결함 E, 2026-09-02) / 매도 FAIL 시 같은 회차 매수 중단
+- 그 재조회는 매도 주문의 체결을 확인한 뒤에 한다 (H′-1, 2026-10-11) — 상한은 스냅샷 현금 + 체결 확인된 매도대금
 - decisions/HALT 파일이 있으면 주문 없이 종료 (리스크 거부권 관철 스위치, 2026-09-01 조건 5)
 - 뉴욕 정규장(09:30~15:45 ET, 평일·휴장일 제외) 밖에서 발화하면 주문 없이 종료 (장시간 가드 — 조용한 큐잉·체결일 괴리 방지)
 - 매수 우선순위: 목표갭(달러) 내림차순 — 알파벳순 예산 선점(결함 F, 2026-09-04) 차단
@@ -17,6 +18,7 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -41,6 +43,9 @@ MIN_TRADE_USD = 200      # 이보다 작은 조정은 생략 (수수료·잡음 
 MAX_STOCK_W = 0.10
 DD_LIMIT = 0.15
 CASH_BUFFER = 0.95       # 매수에 쓰는 현금 비율 — 체결가 변동·수수료 여유 (결함 E)
+FILL_TIMEOUT_SEC = 60    # 매도 체결 확인 최대 대기 (H′-1)
+FILL_POLL_SEC = 2        # 체결 상태 조회 간격
+CASH_SETTLE_SEC = 2      # 체결 확인 후 계좌 현금 반영 여유
 NY = ZoneInfo("America/New_York")
 
 
@@ -64,6 +69,37 @@ def api(path, method="GET", body=None):
                                  data=json.dumps(body).encode() if body else None)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
+
+
+def wait_sell_fills(order_ids: list) -> tuple[float, int, float]:
+    """매도 주문 체결 확인 (H′-1, 2026-10-11).
+
+    결함 H′-1: 매도 접수 직후 대기 없이 현금을 재조회해, 체결 전이라 매도대금이 잡히지 않았다
+    (9/30~10/09 6회 연속 100% 미반영 → 매수 예산이 스냅샷 현금에 묶임).
+    여기서는 각 매도 주문이 종료 상태가 될 때까지(최대 FILL_TIMEOUT_SEC) 기다린 뒤
+    실제 체결된 금액(filled_qty × filled_avg_price)만 합산한다. 부분 체결은 체결분만,
+    취소·거부·시간 초과는 그때까지의 체결분만 인정한다.
+    반환: (체결 확인 금액 합, 완전 체결 건수, 대기 초)
+    """
+    start = time.monotonic()
+    final = {}
+    terminal = {"filled", "canceled", "expired", "rejected", "done_for_day", "replaced"}
+    while True:
+        for oid in order_ids:
+            if oid not in final:
+                o = api(f"/v2/orders/{oid}")
+                if o.get("status") in terminal:
+                    final[oid] = o
+        if len(final) == len(order_ids) or time.monotonic() - start >= FILL_TIMEOUT_SEC:
+            break
+        time.sleep(FILL_POLL_SEC)
+    filled_usd, n_filled = 0.0, 0
+    for oid in order_ids:
+        o = final.get(oid) or api(f"/v2/orders/{oid}")  # 미종료 주문은 마지막 상태로 부분 체결분만 인정
+        filled_usd += float(o.get("filled_qty") or 0) * float(o.get("filled_avg_price") or 0)
+        if o.get("status") == "filled":
+            n_filled += 1
+    return filled_usd, n_filled, time.monotonic() - start
 
 
 def load_targets() -> tuple[dict, str]:
@@ -158,6 +194,8 @@ def main():
     budget = cash
     sell_failed = False
     buys_started = False
+    sell_ids = []            # 이번 회차 매도 주문 id — 매수 전 체결 확인용 (H′-1)
+    untracked_sell_usd = 0.0  # 응답에 주문 id가 없던 매도의 추정액 (체결 확인 불가분)
     for s, side, usd in orders:
         if side == "buy":
             if sell_failed:
@@ -167,13 +205,31 @@ def main():
                 # 결함 E (2026-08-27 등록 → 09-02 수정): 매도 주문 접수 후 브로커 현금을 다시 조회해
                 # 실제 정산 가능 현금의 95%만 예산으로 사용. 스냅샷 현금 + 매도 추정액으로
                 # 매수하면 체결가 차이로 현금이 음수(1조 위반)가 되는 것을 차단.
+                # H′-1 (2026-10-11): 재조회 전에 매도 체결을 확인한다. 상한(cap)은
+                # 스냅샷 현금 + 체결 확인된 매도대금. min(cap, live_cash) 클램프는 그대로 유지
+                # (1조 이중방어 — 삭제 금지). 확인 자체가 실패하면 기존 방식(스냅샷 + 매도 추정액)으로 돌아간다.
+                cap = budget
+                if sell_ids or untracked_sell_usd:
+                    try:
+                        t0 = time.monotonic()
+                        confirmed, n_filled, waited = wait_sell_fills(sell_ids) if sell_ids else (0.0, 0, 0.0)
+                        if untracked_sell_usd and time.monotonic() - t0 < 5:
+                            time.sleep(5 - (time.monotonic() - t0))  # id 없는 매도는 최소 5초 대기
+                        time.sleep(CASH_SETTLE_SEC)
+                        cap = cash + confirmed + untracked_sell_usd
+                        lines.append(f"- 매도 체결 확인: {n_filled}/{len(sell_ids)}건 체결, ${confirmed:,.0f} (대기 {waited:.0f}초)"
+                                     + (f" + id 없는 매도 추정 ${untracked_sell_usd:,.0f}" if untracked_sell_usd else ""))
+                    except Exception as e:
+                        cap = budget
+                        lines.append(f"- WARN 매도 체결 확인 실패({str(e)[:60]}) → 기존 방식 상한 ${cap:,.0f}")
                 try:
                     live_cash = float(api("/v2/account")["cash"])
                 except Exception as e:
-                    live_cash = min(budget, cash)
+                    live_cash = min(cap, cash)
                     lines.append(f"- WARN 현금 재조회 실패({str(e)[:60]}) → 보수적 예산 ${live_cash:,.0f}")
-                budget = max(0.0, min(budget, live_cash)) * CASH_BUFFER
-                lines.append(f"- 매수 예산: 재조회 현금 ${live_cash:,.0f} × {CASH_BUFFER:.0%} = ${budget:,.0f}")
+                budget = max(0.0, min(cap, live_cash)) * CASH_BUFFER
+                lines.append(f"- 매수 예산: min(스냅샷+체결 매도 ${cap:,.0f}, 재조회 현금 ${live_cash:,.0f})"
+                             f" × {CASH_BUFFER:.0%} = ${budget:,.0f}")
                 buys_started = True
             usd = min(usd, budget)          # 현금 범위 내 (헌법 1조)
             if usd < MIN_TRADE_USD:
@@ -184,15 +240,21 @@ def main():
                 # 전량 청산은 금액(notional) 지정 대신 포지션 청산 API 사용 —
                 # 스냅샷 이후 가격 하락 시 매도액 > 보유액이 되어 공매도 시도로
                 # 간주(403)되는 것을 차단 (2026-08-26 결함 D 수정)
-                api(f"/v2/positions/{s}", "DELETE")
+                resp = api(f"/v2/positions/{s}", "DELETE")
                 usd = positions.get(s, usd)
                 lines.append(f"- SELL {s} 전량 ≈${usd:,.0f}")
             else:
                 if side == "sell":
                     usd = min(usd, positions.get(s, usd) * 0.98)  # 잔량 초과 매도 방지
-                api("/v2/orders", "POST", {"symbol": s, "notional": round(usd, 2),
-                                           "side": side, "type": "market", "time_in_force": "day"})
+                resp = api("/v2/orders", "POST", {"symbol": s, "notional": round(usd, 2),
+                                                  "side": side, "type": "market", "time_in_force": "day"})
                 lines.append(f"- {side.upper()} {s} ${usd:,.0f}")
+            if side == "sell":  # 매수 전 체결 확인용으로 주문 id 보관 (H′-1)
+                oid = resp.get("id") if isinstance(resp, dict) else None
+                if oid:
+                    sell_ids.append(oid)
+                else:
+                    untracked_sell_usd += usd
             # 주문이 성공했을 때만 예산 반영 — 매도 실패분을 현금으로 오인해
             # 마진(1조 위반)이 발생하는 것을 차단 (2026-08-26 결함 B 수정)
             budget = budget - usd if side == "buy" else budget + usd
