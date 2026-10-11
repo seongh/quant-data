@@ -41,6 +41,8 @@ jobs:
         if: always()
         run: |
           TODAY=$(TZ=Asia/Seoul date +%F)
+          # KST 자정~12시 사이에 지연 실행된 백업 스케줄이면 당일 집행(09:12~10:12) 전이므로 침묵 (오탐 방지)
+          [ "$(TZ=Asia/Seoul date +%H)" -lt 12 ] && { echo "KST 12시 이전 — 당일 집행 전, 워치독 건너뜀"; exit 0; }
           # 휴장일이면 워치독 침묵
           python - <<'PY' || exit 0
           import sys; sys.path.insert(0,"pipeline")
